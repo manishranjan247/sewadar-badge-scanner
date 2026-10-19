@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sewadar Badge Scanner</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; background: #f4f6f8; color: #222; }
+  h1 { font-size: 1.3rem; margin: 4px 0 12px; }
+  .card { background: #fff; border-radius: 10px; padding: 12px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  #reader { width: 100%; max-width: 420px; margin: auto; }
+  button { padding: 10px 14px; border: 0; border-radius: 8px; background: #1f6feb; color: #fff; font-size: 1rem; margin: 4px 4px 4px 0; cursor: pointer; }
+  button.secondary { background: #57606a; }
+  button.danger { background: #cf222e; }
+  input, select { padding: 9px; font-size: 1rem; border: 1px solid #ccc; border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th, td { border-bottom: 1px solid #eee; padding: 6px 4px; text-align: left; }
+  #status { margin-top: 8px; font-weight: 600; min-height: 1.2em; }
+  .ok { color: #1a7f37; } .err { color: #cf222e; } .warn { color: #9a6700; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  small { color: #666; }
+</style>
+</head>
+<body>
+<h1>Sewadar Badge Scanner</h1>
+
+<div class="card">
+  <div id="reader"></div>
+  <div class="row">
+    <button id="startBtn">Start camera</button>
+    <button id="stopBtn" class="secondary" disabled>Stop camera</button>
+  </div>
+  <div id="status"></div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <input id="manual" inputmode="numeric" maxlength="8" placeholder="Or type 8-digit code">
+    <button id="manualBtn">Decode</button>
+  </div>
+  <label class="row" style="margin-top:8px"><input type="checkbox" id="allowDup"> Allow duplicate scans</label>
+</div>
+
+<div class="card">
+  <div class="row" style="justify-content:space-between">
+    <strong>Scanned (<span id="count">0</span>)</strong>
+    <div>
+      <button id="exportBtn">Export CSV</button>
+      <button id="clearBtn" class="danger">Clear</button>
+    </div>
+  </div>
+  <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th>#</th><th>Badge</th><th>Center</th><th>Gender</th><th>Basic</th><th>Encoded</th><th>Time</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <strong>Center codes</strong> <small>(code → name, badge prefix)</small>
+  <table><tbody id="centerBody"></tbody></table>
+  <div class="row" style="margin-top:6px">
+    <input id="cCode" placeholder="Code" maxlength="2" size="4">
+    <input id="cName" placeholder="Name" size="8">
+    <input id="cPrefix" placeholder="Prefix" size="6">
+    <button id="addCenter" class="secondary">Add</button>
+  </div>
+</div>
+
+<script>
+const STORE = 'badgeScans', CSTORE = 'badgeCenters';
+let scans = JSON.parse(localStorage.getItem(STORE) || '[]');
+let centers = JSON.parse(localStorage.getItem(CSTORE) || 'null') ||
+  { '00': { name: 'PV', prefix: '' }, '01': { name: 'IND', prefix: 'I' } };
+
+// Encoding: basic -> rotate right 3 -> 9's complement. Decoding reverses it.
+function nineComplement(s) { return s.split('').map(c => String(9 - Number(c))).join(''); }
+function rotateLeft(s, n) { return s.slice(n) + s.slice(0, n); }
+
+function decode(encoded) {
+  const code = String(encoded).trim();
+  if (!/^\d{8}$/.test(code)) throw new Error('Not an 8-digit code: ' + code);
+  const basic = rotateLeft(nineComplement(code), 3);
+  const centerCode = basic.slice(0, 2), g = basic[2], num = basic.slice(3);
+  if (g !== '0' && g !== '1') throw new Error('Invalid gender digit in ' + basic);
+  const center = centers[centerCode] || { name: 'Unknown(' + centerCode + ')', prefix: '' };
+  const gender = g === '0' ? 'Male' : 'Female';
+  const badge = center.prefix + (g === '0' ? 'M' : 'F') + String(parseInt(num, 10));
+  return { encoded: code, basic: `${centerCode}-${g}-${num}`, centerCode, center: center.name, gender, badge };
+}
+
+const $ = id => document.getElementById(id);
+function setStatus(msg, cls) { $('status').textContent = msg; $('status').className = cls; }
+function save() { localStorage.setItem(STORE, JSON.stringify(scans)); }
+
+function render() {
+  $('count').textContent = scans.length;
+  $('tbody').innerHTML = scans.map((s, i) => `<tr><td>${i + 1}</td><td><b>${s.badge}</b></td><td>${s.center}</td>
+    <td>${s.gender}</td><td>${s.basic}</td><td>${s.encoded}</td><td>${new Date(s.time).toLocaleTimeString()}</td>
+    <td><button class="danger" style="padding:4px 8px" onclick="removeScan(${i})">×</button></td></tr>`).reverse().join('');
+  $('centerBody').innerHTML = Object.entries(centers).map(([k, v]) =>
+    `<tr><td>${k}</td><td>${v.name}</td><td>${v.prefix || '—'}</td>
+     <td><button class="danger" style="padding:4px 8px" onclick="removeCenter('${k}')">×</button></td></tr>`).join('');
+}
+window.removeScan = i => { scans.splice(i, 1); save(); render(); };
+window.removeCenter = k => { delete centers[k]; localStorage.setItem(CSTORE, JSON.stringify(centers)); render(); };
+
+let lastText = '', lastTime = 0;
+function handle(text) {
+  const now = Date.now();
+  if (text === lastText && now - lastTime < 2500) return; // debounce same frame repeats
+  lastText = text; lastTime = now;
+  try {
+    const r = decode(text);
+    if (!$('allowDup').checked && scans.some(s => s.encoded === r.encoded)) {
+      setStatus(`Already scanned: ${r.badge}`, 'warn'); return;
+    }
+    scans.push({ ...r, time: new Date().toISOString() });
+    save(); render();
+    setStatus(`✔ ${r.badge} (${r.center}, ${r.gender})`, 'ok');
+    if (navigator.vibrate) navigator.vibrate(100);
+  } catch (e) { setStatus('✖ ' + e.message, 'err'); }
+}
+
+let scanner;
+$('startBtn').onclick = async () => {
+  scanner = scanner || new Html5Qrcode('reader');
+  try {
+    await scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 250, height: 250 } }, handle);
+    $('startBtn').disabled = true; $('stopBtn').disabled = false;
+  } catch (e) { setStatus('Camera error: ' + e + ' (page must be opened over HTTPS)', 'err'); }
+};
+$('stopBtn').onclick = async () => {
+  await scanner.stop(); $('startBtn').disabled = false; $('stopBtn').disabled = true;
+};
+$('manualBtn').onclick = () => { lastText = ''; handle($('manual').value); $('manual').value = ''; };
+$('manual').onkeydown = e => { if (e.key === 'Enter') $('manualBtn').click(); };
+
+$('exportBtn').onclick = () => {
+  if (!scans.length) return setStatus('Nothing to export', 'warn');
+  const esc = v => `"${String(v).replace(/"/g, '""')}"`;
+  const rows = [['Badge', 'Center', 'CenterCode', 'Gender', 'BasicBarcode', 'EncodedBarcode', 'ScannedAt']]
+    .concat(scans.map(s => [s.badge, s.center, s.centerCode, s.gender, s.basic, s.encoded, s.time]));
+  const csv = '\ufeff' + rows.map(r => r.map(esc).join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = `badges_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+  a.click();
+};
+$('clearBtn').onclick = () => { if (confirm('Clear all scans?')) { scans = []; save(); render(); } };
+$('addCenter').onclick = () => {
+  const code = $('cCode').value.trim().padStart(2, '0');
+  if (!/^\d{2}$/.test(code) || !$('cName').value.trim()) return alert('Enter 2-digit code and name');
+  centers[code] = { name: $('cName').value.trim(), prefix: $('cPrefix').value.trim() };
+  localStorage.setItem(CSTORE, JSON.stringify(centers));
+  $('cCode').value = $('cName').value = $('cPrefix').value = ''; render();
+};
+
+render();
+</script>
+</body>
+</html>
